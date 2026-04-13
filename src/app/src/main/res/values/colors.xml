@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- ── Palette ── -->
+    <color name="bg_dark">#0D0F14</color>
+    <color name="card_bg">#161A23</color>
+    <color name="accent">#4F8EF7</color>
+    <color name="accent_dark">#2F6BE0</color>
+
+    <color name="text_primary">#F0F2F8</color>
+    <color name="text_secondary">#8A90A4</color>
+    <color name="text_hint">#4A5068</color>
+
+    <color name="input_bg">#1E2334</color>
+    <color name="input_stroke">#2C3250</color>
+    <color name="input_stroke_focused">#4F8EF7</color>
+
+    <color name="error_bg">#2A1520</color>
+    <color name="error_text">#F07070</color>
+
+    <color name="btn_text">#FFFFFF</color>
+
+    <!-- Para el selector de stroke de los campos de texto -->
+    <color name="input_stroke_selector">#2C3250</color>
+
+</resources>
