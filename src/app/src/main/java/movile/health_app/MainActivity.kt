@@ -1,7 +1,9 @@
 package movile.health_app
 
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.os.Bundle
+import android.os.Debug
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -34,9 +36,89 @@ import kotlinx.coroutines.withContext
 import movile.health_app.ui.theme.Health_AppTheme
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.pow
+import kotlin.system.exitProcess
+
+// ── Comprobaciones de seguridad ───────────────────────────────────────────────
+object SecurityCheck {
+
+    // ── 1. Detección de modo debug ────────────────────────────────────────────
+    /**
+     * Devuelve true si la app está firmada o ejecutándose en modo debug.
+     *
+     * Combina tres métodos:
+     *  a) Flag ApplicationInfo.FLAG_DEBUGGABLE del manifiesto.
+     *  b) BuildConfig.DEBUG (valor de compilación).
+     *  c) Debug.isDebuggerConnected(): detecta un depurador activo en tiempo real.
+     */
+    fun isDebugEnvironment(context: android.content.Context): Boolean {
+        val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        val hasDebugger  = Debug.isDebuggerConnected()
+        return isDebuggable || hasDebugger
+    }
+
+    // ── 2. Detección de root ──────────────────────────────────────────────────
+    /**
+     * Devuelve true si se detectan indicios de root en el dispositivo.
+     *
+     * Combina cuatro métodos:
+     *  a) Presencia del binario `su` en rutas del sistema.
+     *  b) Paquetes de gestión de root conocidos instalados (Magisk, SuperSU, KingRoot…).
+     *  c) Build tags "test-keys" (imagen de sistema no oficial).
+     *  d) Escritura en /system (partición normalmente de sólo lectura).
+     */
+    fun isRootedDevice(context: android.content.Context): Boolean =
+        hasSuBinary() || hasRootPackages(context) || hasTestKeys() || canWriteSystem()
+
+    // a) Rutas habituales del binario su
+    private fun hasSuBinary(): Boolean {
+        val paths = arrayOf(
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/sbin/su",
+            "/su/bin/su",
+            "/data/local/xbin/su",
+            "/data/local/bin/su",
+            "/data/local/su",
+            "/system/sd/xbin/su",
+            "/system/bin/failsafe/su",
+            "/dev/com.koushikdutta.superuser.daemon/"
+        )
+        return paths.any { File(it).exists() }
+    }
+
+    // b) Paquetes asociados a root/jailbreak
+    private fun hasRootPackages(context: android.content.Context): Boolean {
+        val rootPackages = listOf(
+            "com.topjohnwu.magisk",          // Magisk
+            "eu.chainfire.supersu",           // SuperSU
+            "com.noshufou.android.su",        // Superuser (ChainsDD)
+            "com.koushikdutta.superuser",     // Superuser (Koush)
+            "com.thirdparty.superuser",
+            "com.yellowes.su",
+            "com.kingroot.kinguser",          // KingRoot
+            "com.kingo.root",                 // KingoRoot
+            "com.smedialink.oneclickroot",
+            "com.zhiqupk.root.global",
+            "com.alephzain.framaroot"
+        )
+        val pm = context.packageManager
+        return rootPackages.any { pkg ->
+            runCatching { pm.getPackageInfo(pkg, 0); true }.getOrDefault(false)
+        }
+    }
+
+    // c) Build tags de imagen no oficial
+    private fun hasTestKeys(): Boolean =
+        android.os.Build.TAGS?.contains("test-keys") == true
+
+    // d) Intenta escribir en /system (solo root puede hacerlo)
+    private fun canWriteSystem(): Boolean =
+        runCatching { File("/system/test_root_write").createNewFile() }.getOrDefault(false)
+}
 
 // ── Modelo de datos ──────────────────────────────────────────────────────────
 data class HealthData(
@@ -52,21 +134,52 @@ data class HealthData(
 
 // ── Actividad principal ───────────────────────────────────────────────────────
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
 
-        val sharedPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-        val jwtToken = sharedPrefs.getString("jwt", "") ?: ""
+            val isDebug = SecurityCheck.isDebugEnvironment(this)
+            val isRooted = SecurityCheck.isRootedDevice(this)
 
-        setContent {
-            Health_AppTheme {
-                HealthDashboardScreen(jwtToken = jwtToken)
+            if (isDebug || isRooted) {
+                val reason = if (isDebug) "debug" else "root"
+                blockApp(reason)
+                return
+            }
+
+            enableEdgeToEdge()
+
+            val sharedPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+            val jwtToken = sharedPrefs.getString("jwt", "") ?: ""
+
+            setContent {
+                Health_AppTheme {
+                    HealthDashboardScreen(jwtToken = jwtToken)
+                }
             }
         }
-    }
-}
 
+        // ✅ Método de instancia dentro de la clase — this y finishAffinity() disponibles
+        private fun blockApp(reason: String) {
+            val (title, message) = when (reason) {
+                "debug" -> "Entorno no permitido" to
+                        "Esta aplicación no puede ejecutarse en modo de depuración."
+
+                else -> "Dispositivo no compatible" to
+                        "Se han detectado privilegios de superusuario (root). " +
+                        "Esta aplicación no puede ejecutarse en un dispositivo rooteado."
+            }
+
+            android.app.AlertDialog.Builder(this)           // ✅ this = MainActivity
+                .setTitle(title)
+                .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton("Cerrar") { _, _ ->
+                    finishAffinity()                        // ✅ método de ComponentActivity
+                    exitProcess(0)
+                }
+                .show()
+        }
+    }
 // ── Pantalla principal ────────────────────────────────────────────────────────
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -77,7 +190,6 @@ fun HealthDashboardScreen(jwtToken: String) {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showLogoutDialog by remember { mutableStateOf(false) }
 
-    // ── Estado del diálogo de inserción ──
     var showInsertDialog by remember { mutableStateOf(false) }
     var insertPeso by remember { mutableStateOf("") }
     var insertAltura by remember { mutableStateOf("") }
@@ -87,7 +199,6 @@ fun HealthDashboardScreen(jwtToken: String) {
 
     val context = LocalContext.current
 
-    // Función reutilizable para cargar datos
     fun loadData() {
         isLoading = true
         errorMessage = null
@@ -104,7 +215,6 @@ fun HealthDashboardScreen(jwtToken: String) {
 
     LaunchedEffect(Unit) { loadData() }
 
-    // ── Diálogo de cierre de sesión ──
     if (showLogoutDialog) {
         AlertDialog(
             onDismissRequest = { showLogoutDialog = false },
@@ -131,7 +241,6 @@ fun HealthDashboardScreen(jwtToken: String) {
         )
     }
 
-    // ── Diálogo de inserción de datos ──
     if (showInsertDialog) {
         AlertDialog(
             onDismissRequest = {
@@ -164,7 +273,6 @@ fun HealthDashboardScreen(jwtToken: String) {
                         enabled = !insertLoading,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    // Mensajes de estado
                     when {
                         insertLoading -> {
                             Row(
@@ -216,7 +324,6 @@ fun HealthDashboardScreen(jwtToken: String) {
                                 insertSuccess = true
                                 insertPeso = ""
                                 insertAltura = ""
-                                // Recargar datos del dashboard tras insertar
                                 loadData()
                             } catch (e: Exception) {
                                 insertError = e.message ?: "Error desconocido"
@@ -251,7 +358,6 @@ fun HealthDashboardScreen(jwtToken: String) {
             TopAppBar(
                 title = { Text("Mi Salud", fontWeight = FontWeight.Bold, fontSize = 22.sp) },
                 actions = {
-                    // ── Botón de inserción ──
                     IconButton(onClick = {
                         insertError = null
                         insertSuccess = false
@@ -489,7 +595,6 @@ suspend fun insertHealthData(jwtToken: String, peso: Float, altura: Float): Unit
         HttpURLConnection.HTTP_OK -> {
             connection.inputStream.bufferedReader(Charsets.UTF_8).readText()
             connection.disconnect()
-            // Inserción correcta; el caller puede recargar los datos
         }
         HttpURLConnection.HTTP_MOVED_TEMP,
         HttpURLConnection.HTTP_MOVED_PERM -> { connection.disconnect(); throw Exception("Redirección inesperada (¿token caducado?)") }
