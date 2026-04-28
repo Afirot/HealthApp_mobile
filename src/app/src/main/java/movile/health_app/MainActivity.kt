@@ -2,6 +2,7 @@ package movile.health_app
 
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Debug
 import androidx.activity.ComponentActivity
@@ -39,10 +40,13 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import kotlin.math.pow
 import kotlin.system.exitProcess
 
-// ── Comprobaciones de seguridad ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMPROBACIONES DE SEGURIDAD
+// ═══════════════════════════════════════════════════════════════════════════════
 object SecurityCheck {
 
     // ── 1. Detección de modo debug ────────────────────────────────────────────
@@ -53,12 +57,15 @@ object SecurityCheck {
      *  a) Flag ApplicationInfo.FLAG_DEBUGGABLE del manifiesto.
      *  b) BuildConfig.DEBUG (valor de compilación).
      *  c) Debug.isDebuggerConnected(): detecta un depurador activo en tiempo real.
+     *
+     * Envuelto en runCatching para garantizar que cualquier excepción inesperada
+     * no provoque un crash técnico (fail-open: si falla, se permite el acceso).
      */
-    fun isDebugEnvironment(context: android.content.Context): Boolean {
+    fun isDebugEnvironment(context: android.content.Context): Boolean = runCatching {
         val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         val hasDebugger  = Debug.isDebuggerConnected()
-        return isDebuggable || hasDebugger
-    }
+        isDebuggable || hasDebugger
+    }.getOrDefault(false)
 
     // ── 2. Detección de root ──────────────────────────────────────────────────
     /**
@@ -66,15 +73,16 @@ object SecurityCheck {
      *
      * Combina cuatro métodos:
      *  a) Presencia del binario `su` en rutas del sistema.
-     *  b) Paquetes de gestión de root conocidos instalados (Magisk, SuperSU, KingRoot…).
+     *  b) Paquetes de gestión de root conocidos instalados (Magisk, SuperSU…).
      *  c) Build tags "test-keys" (imagen de sistema no oficial).
      *  d) Escritura en /system (partición normalmente de sólo lectura).
      */
-    fun isRootedDevice(context: android.content.Context): Boolean =
+    fun isRootedDevice(context: android.content.Context): Boolean = runCatching {
         hasSuBinary() || hasRootPackages(context) || hasTestKeys() || canWriteSystem()
+    }.getOrDefault(false)
 
     // a) Rutas habituales del binario su
-    private fun hasSuBinary(): Boolean {
+    private fun hasSuBinary(): Boolean = runCatching {
         val paths = arrayOf(
             "/system/bin/su",
             "/system/xbin/su",
@@ -87,40 +95,167 @@ object SecurityCheck {
             "/system/bin/failsafe/su",
             "/dev/com.koushikdutta.superuser.daemon/"
         )
-        return paths.any { File(it).exists() }
-    }
+        paths.any { File(it).exists() }
+    }.getOrDefault(false)
 
     // b) Paquetes asociados a root/jailbreak
-    private fun hasRootPackages(context: android.content.Context): Boolean {
+    private fun hasRootPackages(context: android.content.Context): Boolean = runCatching {
         val rootPackages = listOf(
-            "com.topjohnwu.magisk",          // Magisk
-            "eu.chainfire.supersu",           // SuperSU
-            "com.noshufou.android.su",        // Superuser (ChainsDD)
-            "com.koushikdutta.superuser",     // Superuser (Koush)
+            "com.topjohnwu.magisk",
+            "eu.chainfire.supersu",
+            "com.noshufou.android.su",
+            "com.koushikdutta.superuser",
             "com.thirdparty.superuser",
             "com.yellowes.su",
-            "com.kingroot.kinguser",          // KingRoot
-            "com.kingo.root",                 // KingoRoot
+            "com.kingroot.kinguser",
+            "com.kingo.root",
             "com.smedialink.oneclickroot",
             "com.zhiqupk.root.global",
             "com.alephzain.framaroot"
         )
         val pm = context.packageManager
-        return rootPackages.any { pkg ->
+        rootPackages.any { pkg ->
             runCatching { pm.getPackageInfo(pkg, 0); true }.getOrDefault(false)
         }
-    }
+    }.getOrDefault(false)
 
     // c) Build tags de imagen no oficial
-    private fun hasTestKeys(): Boolean =
+    private fun hasTestKeys(): Boolean = runCatching {
         android.os.Build.TAGS?.contains("test-keys") == true
+    }.getOrDefault(false)
 
     // d) Intenta escribir en /system (solo root puede hacerlo)
     private fun canWriteSystem(): Boolean =
         runCatching { File("/system/test_root_write").createNewFile() }.getOrDefault(false)
+
+    // ── 3. Verificación de firma ──────────────────────────────────────────────
+    /**
+     * Verifica que la firma del certificado APK coincida con el hash esperado.
+     *
+     * IMPORTANTE: Para obtener tu hash real de release, puedes:
+     *  - Añadir temporalmente un log: Log.d("CERT", getSignatureSha256(context))
+     *    en un build de release, copiar el valor y eliminarlo antes de publicar.
+     *  - O usar: keytool -printcert -jarfile app-release.apk
+     *
+     * La constante EXPECTED_CERT_SHA256 debe contener 64 caracteres hex en
+     * mayúsculas. Mientras esté vacía, la verificación se omite en todos los
+     * entornos para no bloquear a los usuarios antes de configurarla.
+     *
+     * En modo DEBUG (BuildConfig.DEBUG == true) la verificación siempre se omite
+     * porque el AVD usa certificados de debug que nunca coincidirán con release.
+     *
+     * Fail-secure: cuando el hash está configurado, cualquier excepción se trata
+     * como tampering (devuelve true = bloqueado).
+     */
+    private const val EXPECTED_CERT_SHA256 = ""
+    // ← Rellena con tu hash de release antes de publicar. Ejemplo (64 chars hex):
+    // "A1B2C3D4E5F67890A1B2C3D4E5F67890A1B2C3D4E5F67890A1B2C3D4E5F67890"
+
+    fun isSignatureTampered(context: android.content.Context): Boolean {
+        // En debug, omitir siempre: el AVD usa firma de debug
+        val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (isDebuggable) return false
+        // Si el hash no está configurado, no bloquear (aún en proceso de setup)
+        if (EXPECTED_CERT_SHA256.isBlank()) return false
+        // En release con hash configurado: fail-secure ante cualquier error
+        return runCatching {
+            val computedHash = getSignatureSha256(context)
+            computedHash != EXPECTED_CERT_SHA256
+        }.getOrDefault(true)
+    }
+
+    /**
+     * Devuelve el SHA-256 (hex en mayúsculas, 64 caracteres) del primer
+     * certificado de firma de la APK instalada.
+     *
+     * Usa la API adecuada según versión de Android:
+     *  - Android ≥ 9 (API 28+): PackageInfo.signingInfo → apkContentsSigners
+     *  - Android < 9           : PackageInfo.signatures (deprecated pero funcional)
+     */
+    @Suppress("DEPRECATION")
+    fun getSignatureSha256(context: android.content.Context): String {
+        val pm          = context.packageManager
+        val packageName = context.packageName
+
+        val certBytes: ByteArray =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                val info = pm.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                info.signingInfo
+                    ?.apkContentsSigners
+                    ?.firstOrNull()
+                    ?.toByteArray()
+                    ?: throw IllegalStateException("Sin información de firma (API 28+)")
+            } else {
+                @Suppress("DEPRECATION")
+                val info = pm.getPackageInfo(packageName, PackageManager.GET_SIGNATURES)
+                info.signatures
+                    ?.firstOrNull()
+                    ?.toByteArray()
+                    ?: throw IllegalStateException("Sin información de firma (API < 28)")
+            }
+
+        return MessageDigest.getInstance("SHA-256").digest(certBytes)
+            .joinToString("") { "%02X".format(it) }
+    }
+
+    // ── 4. Detección de emulador ──────────────────────────────────────────────
+    /**
+     * Devuelve true si se detectan indicios de entorno emulado.
+     *
+     * Combina dos capas de detección:
+     *  a) Campos de Build típicos de emuladores (FINGERPRINT, MODEL, HARDWARE…).
+     *  b) Ficheros de dispositivos de emuladores conocidos (goldfish, ranchu, Genymotion).
+     *
+     * NOTA: Ningún método es infalible; la combinación reduce falsos negativos
+     * manteniendo los falsos positivos en un nivel aceptable.
+     *
+     * Envuelto en runCatching para garantizar cero crashes técnicos.
+     */
+    fun isEmulator(context: android.content.Context): Boolean = runCatching {
+        hasBuildEmulatorTraces() || hasEmulatorFiles()
+    }.getOrDefault(false)
+
+    // a) Huellas en los campos de Build del sistema
+    private fun hasBuildEmulatorTraces(): Boolean = runCatching {
+        val brand        = android.os.Build.BRAND.lowercase()
+        val device       = android.os.Build.DEVICE.lowercase()
+        val fingerprint  = android.os.Build.FINGERPRINT.lowercase()
+        val hardware     = android.os.Build.HARDWARE.lowercase()
+        val manufacturer = android.os.Build.MANUFACTURER.lowercase()
+        val model        = android.os.Build.MODEL.lowercase()
+        val product      = android.os.Build.PRODUCT.lowercase()
+
+        fingerprint.startsWith("generic")
+                || fingerprint.startsWith("unknown")
+                || model.contains("google_sdk")
+                || model.contains("emulator")
+                || model.contains("android sdk built for x86")
+                || manufacturer.contains("genymotion")
+                || (brand.startsWith("generic") && device.startsWith("generic"))
+                || product == "google_sdk"
+                || product.contains("sdk_gphone")
+                || hardware.contains("goldfish")
+                || hardware.contains("ranchu")
+    }.getOrDefault(false)
+
+    // b) Ficheros y sockets característicos de entornos virtuales
+    private fun hasEmulatorFiles(): Boolean = runCatching {
+        val emulatorFiles = arrayOf(
+            "/dev/socket/qemud",
+            "/dev/qemu_pipe",
+            "/system/lib/libc_malloc_debug_qemu.so",
+            "/sys/qemu_trace",
+            "/system/bin/qemu-props",
+            "/dev/socket/genyd",          // Genymotion
+            "/dev/socket/baseband_genyd"  // Genymotion
+        )
+        emulatorFiles.any { File(it).exists() }
+    }.getOrDefault(false)
 }
 
-// ── Modelo de datos ──────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODELO DE DATOS
+// ═══════════════════════════════════════════════════════════════════════════════
 data class HealthData(
     val weight: Float = 0f,
     val height: Float = 0f,
@@ -132,55 +267,122 @@ data class HealthData(
         }
 }
 
-// ── Actividad principal ───────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENUM: MOTIVOS DE BLOQUEO
+// ═══════════════════════════════════════════════════════════════════════════════
+enum class BlockReason { DEBUG, ROOT, EMULATOR, SIGNATURE }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACTIVIDAD PRINCIPAL
+// ═══════════════════════════════════════════════════════════════════════════════
 class MainActivity : ComponentActivity() {
-        override fun onCreate(savedInstanceState: Bundle?) {
-            super.onCreate(savedInstanceState)
 
-            val isDebug = SecurityCheck.isDebugEnvironment(this)
-            val isRooted = SecurityCheck.isRootedDevice(this)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
 
-            if (isDebug || isRooted) {
-                val reason = if (isDebug) "debug" else "root"
-                blockApp(reason)
-                return
-            }
-
-            enableEdgeToEdge()
-
-            val sharedPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-            val jwtToken = sharedPrefs.getString("jwt", "") ?: ""
-
-            setContent {
-                Health_AppTheme {
-                    HealthDashboardScreen(jwtToken = jwtToken)
-                }
-            }
+        // ── Verificación de firma ─────────────────────────────────────────────
+        // Se ejecuta ANTES que cualquier otra comprobación.
+        // En release con hash configurado: cierre silencioso (una APK re-empaquetada
+        // no merece aviso; el usuario legítimo nunca debería llegar aquí).
+        // En debug o sin hash configurado: se omite automáticamente.
+        if (SecurityCheck.isSignatureTampered(this)) {
+            safeExit()
+            return
         }
 
-        // ✅ Método de instancia dentro de la clase — this y finishAffinity() disponibles
-        private fun blockApp(reason: String) {
-            val (title, message) = when (reason) {
-                "debug" -> "Entorno no permitido" to
-                        "Esta aplicación no puede ejecutarse en modo de depuración."
+        // ── Verificaciones de entorno ─────────────────────────────────────────
+        // Se evalúan ANTES de inflar la UI para evitar mostrar ninguna vista
+        // si el entorno no es seguro. El orden es: debug > root > emulador.
+        // En debug no comprobamos emulador porque el AVD es un emulador por definición.
+        val isDebug    = SecurityCheck.isDebugEnvironment(this)
+        val isRooted   = SecurityCheck.isRootedDevice(this)
+        val isEmulator = if (!isDebug) SecurityCheck.isEmulator(this) else false
 
-                else -> "Dispositivo no compatible" to
-                        "Se han detectado privilegios de superusuario (root). " +
-                        "Esta aplicación no puede ejecutarse en un dispositivo rooteado."
+        when {
+            isDebug    -> { blockApp(BlockReason.DEBUG);    return }
+            isRooted   -> { blockApp(BlockReason.ROOT);     return }
+            isEmulator -> { blockApp(BlockReason.EMULATOR); return }
+        }
+
+        enableEdgeToEdge()
+
+        val sharedPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+        val jwtToken    = sharedPrefs.getString("jwt", "") ?: ""
+
+        setContent {
+            Health_AppTheme {
+                HealthDashboardScreen(jwtToken = jwtToken)
             }
+        }
+    }
 
-            android.app.AlertDialog.Builder(this)           // ✅ this = MainActivity
+    /**
+     * Muestra un diálogo de seguridad claro y no técnico al usuario, luego cierra
+     * la app de forma controlada.
+     *
+     * Garantías de resiliencia (Nivel 5):
+     *  - No hay crashes técnicos: todo el bloque está envuelto en runCatching.
+     *  - Si el diálogo no puede mostrarse (actividad ya destruida, etc.),
+     *    safeExit() se llama directamente en onFailure.
+     *  - setCancelable(false) impide que el usuario descarte el aviso.
+     *  - setOnDismissListener actúa como red de seguridad si el sistema
+     *    descarta el diálogo automáticamente.
+     *  - finishAffinity() cierra toda la pila de actividades antes de exitProcess().
+     */
+    private fun blockApp(reason: BlockReason) {
+        val (title, message) = when (reason) {
+            BlockReason.DEBUG ->
+                "Entorno no permitido" to
+                        "Esta aplicación no puede ejecutarse en modo de depuración.\n\n" +
+                        "Si eres usuario final, por favor descarga la aplicación " +
+                        "desde la tienda oficial."
+
+            BlockReason.ROOT ->
+                "Dispositivo no compatible" to
+                        "Se han detectado privilegios de superusuario (root) en este " +
+                        "dispositivo.\n\nEsta aplicación no puede ejecutarse en " +
+                        "dispositivos rooteados para proteger tus datos de salud."
+
+            BlockReason.EMULATOR ->
+                "Entorno no permitido" to
+                        "Esta aplicación no puede ejecutarse en un emulador o " +
+                        "dispositivo virtual.\n\nPor favor, instala la aplicación " +
+                        "en un dispositivo físico."
+
+            BlockReason.SIGNATURE ->
+                "Error de seguridad" to
+                        "La integridad de la aplicación no ha podido verificarse. " +
+                        "Por favor, descárgala de nuevo desde la tienda oficial."
+        }
+
+        runCatching {
+            android.app.AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
                 .setCancelable(false)
-                .setPositiveButton("Cerrar") { _, _ ->
-                    finishAffinity()                        // ✅ método de ComponentActivity
-                    exitProcess(0)
-                }
+                .setPositiveButton("Cerrar") { _, _ -> safeExit() }
+                .setOnDismissListener { safeExit() }
                 .show()
+        }.onFailure {
+            // Si el diálogo no se pudo mostrar, cerramos directamente sin crash
+            safeExit()
         }
     }
-// ── Pantalla principal ────────────────────────────────────────────────────────
+
+    /**
+     * Cierre limpio y controlado de la aplicación.
+     * finishAffinity() cierra todas las actividades de la pila antes de
+     * terminar el proceso, evitando fugas de actividades en background.
+     */
+    private fun safeExit() {
+        runCatching { finishAffinity() }
+        exitProcess(0)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PANTALLA PRINCIPAL
+// ═══════════════════════════════════════════════════════════════════════════════
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HealthDashboardScreen(jwtToken: String) {
@@ -215,6 +417,7 @@ fun HealthDashboardScreen(jwtToken: String) {
 
     LaunchedEffect(Unit) { loadData() }
 
+    // ── Diálogo de cerrar sesión ──────────────────────────────────────────────
     if (showLogoutDialog) {
         AlertDialog(
             onDismissRequest = { showLogoutDialog = false },
@@ -241,6 +444,7 @@ fun HealthDashboardScreen(jwtToken: String) {
         )
     }
 
+    // ── Diálogo de insertar datos ─────────────────────────────────────────────
     if (showInsertDialog) {
         AlertDialog(
             onDismissRequest = {
@@ -309,20 +513,20 @@ fun HealthDashboardScreen(jwtToken: String) {
                 TextButton(
                     enabled = !insertLoading && insertPeso.isNotBlank() && insertAltura.isNotBlank(),
                     onClick = {
-                        val peso = insertPeso.trim().toFloatOrNull()
+                        val peso   = insertPeso.trim().toFloatOrNull()
                         val altura = insertAltura.trim().toFloatOrNull()
                         if (peso == null || altura == null) {
                             insertError = "Introduce valores numéricos válidos."
                             return@TextButton
                         }
                         insertLoading = true
-                        insertError = null
+                        insertError   = null
                         insertSuccess = false
                         scope.launch {
                             try {
                                 insertHealthData(jwtToken, peso, altura)
                                 insertSuccess = true
-                                insertPeso = ""
+                                insertPeso   = ""
                                 insertAltura = ""
                                 loadData()
                             } catch (e: Exception) {
@@ -341,9 +545,9 @@ fun HealthDashboardScreen(jwtToken: String) {
                     enabled = !insertLoading,
                     onClick = {
                         showInsertDialog = false
-                        insertPeso = ""
+                        insertPeso   = ""
                         insertAltura = ""
-                        insertError = null
+                        insertError  = null
                         insertSuccess = false
                     }
                 ) {
@@ -353,13 +557,14 @@ fun HealthDashboardScreen(jwtToken: String) {
         )
     }
 
+    // ── Scaffold principal ────────────────────────────────────────────────────
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Mi Salud", fontWeight = FontWeight.Bold, fontSize = 22.sp) },
                 actions = {
                     IconButton(onClick = {
-                        insertError = null
+                        insertError   = null
                         insertSuccess = false
                         showInsertDialog = true
                     }) {
@@ -370,7 +575,7 @@ fun HealthDashboardScreen(jwtToken: String) {
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFF1976D2),
+                    containerColor    = Color(0xFF1976D2),
                     titleContentColor = Color.White
                 )
             )
@@ -386,23 +591,23 @@ fun HealthDashboardScreen(jwtToken: String) {
                 isLoading -> {
                     CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center),
-                        color = Color(0xFF1976D2)
+                        color    = Color(0xFF1976D2)
                     )
                 }
                 errorMessage != null -> {
                     Column(
-                        modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                        modifier             = Modifier.align(Alignment.Center).padding(16.dp),
+                        horizontalAlignment  = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "No se pudieron cargar los datos.",
-                            color = Color(0xFF757575),
+                            text     = "No se pudieron cargar los datos.",
+                            color    = Color(0xFF757575),
                             fontSize = 14.sp
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Comprueba tu conexión e inténtalo de nuevo.",
-                            color = Color(0xFFBDBDBD),
+                            text     = "Comprueba tu conexión e inténtalo de nuevo.",
+                            color    = Color(0xFFBDBDBD),
                             fontSize = 12.sp
                         )
                     }
@@ -415,7 +620,9 @@ fun HealthDashboardScreen(jwtToken: String) {
     }
 }
 
-// ── Contenido ─────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONTENIDO
+// ═══════════════════════════════════════════════════════════════════════════════
 @Composable
 fun HealthContent(data: HealthData) {
     val scrollState = rememberScrollState()
@@ -427,8 +634,8 @@ fun HealthContent(data: HealthData) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            modifier                = Modifier.fillMaxWidth(),
+            horizontalArrangement   = Arrangement.spacedBy(12.dp)
         ) {
             StatCard(modifier = Modifier.weight(1f), label = "Peso",   value = "${"%.1f".format(data.weight)} kg", color = Color(0xFF64B5F6))
             StatCard(modifier = Modifier.weight(1f), label = "Altura", value = "${"%.1f".format(data.height)} cm", color = Color(0xFFE57373))
@@ -436,18 +643,18 @@ fun HealthContent(data: HealthData) {
         }
 
         Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            modifier  = Modifier.fillMaxWidth(),
+            shape     = RoundedCornerShape(16.dp),
+            colors    = CardDefaults.cardColors(containerColor = Color.White),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("Resumen", fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Color(0xFF212121))
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier              = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment     = Alignment.CenterVertically
                 ) {
                     LegendItem(color = Color(0xFF64B5F6), label = "Peso")
                     Spacer(modifier = Modifier.width(16.dp))
@@ -462,7 +669,9 @@ fun HealthContent(data: HealthData) {
     }
 }
 
-// ── Leyenda ───────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// LEYENDA
+// ═══════════════════════════════════════════════════════════════════════════════
 @Composable
 fun LegendItem(color: Color, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -472,7 +681,9 @@ fun LegendItem(color: Color, label: String) {
     }
 }
 
-// ── Gráfica de barras ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// GRÁFICA DE BARRAS
+// ═══════════════════════════════════════════════════════════════════════════════
 @Composable
 fun HealthBarChart(peso: Float, altura: Float, imc: Float) {
     val bars = listOf(
@@ -493,7 +704,12 @@ fun HealthBarChart(peso: Float, altura: Float, imc: Float) {
 
             for (i in 0..steps) {
                 val y = paddingTop + chartH - (chartH / steps) * i
-                drawLine(color = Color(0xFFE0E0E0), start = Offset(0f, y), end = Offset(canvasW, y), strokeWidth = 1f)
+                drawLine(
+                    color       = Color(0xFFE0E0E0),
+                    start       = Offset(0f, y),
+                    end         = Offset(canvasW, y),
+                    strokeWidth = 1f
+                )
             }
 
             val barWidth = canvasW / (bars.size * 2f)
@@ -512,7 +728,7 @@ fun HealthBarChart(peso: Float, altura: Float, imc: Float) {
         }
 
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            modifier              = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
             bars.forEach { (label, value, _) ->
@@ -525,13 +741,15 @@ fun HealthBarChart(peso: Float, altura: Float, imc: Float) {
     }
 }
 
-// ── Tarjeta de estadística ────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// TARJETA DE ESTADÍSTICA
+// ═══════════════════════════════════════════════════════════════════════════════
 @Composable
 fun StatCard(modifier: Modifier = Modifier, label: String, value: String, color: Color) {
     Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.15f)),
+        modifier  = modifier,
+        shape     = RoundedCornerShape(16.dp),
+        colors    = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.15f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -542,14 +760,16 @@ fun StatCard(modifier: Modifier = Modifier, label: String, value: String, color:
     }
 }
 
-// ── GET: obtener datos de salud ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// GET: OBTENER DATOS DE SALUD
+// ═══════════════════════════════════════════════════════════════════════════════
 suspend fun fetchHealthData(jwtToken: String): HealthData = withContext(Dispatchers.IO) {
     if (jwtToken.isBlank()) throw Exception("Token vacío")
 
     val connection = (URL("http://10.0.2.2/api/datos_usuario.php").openConnection() as HttpURLConnection).apply {
-        requestMethod = "GET"
-        connectTimeout = 10_000
-        readTimeout    = 10_000
+        requestMethod          = "GET"
+        connectTimeout         = 10_000
+        readTimeout            = 10_000
         instanceFollowRedirects = false
         setRequestProperty("Accept", "application/json")
         setRequestProperty("Cookie", "jwt=$jwtToken")
@@ -560,16 +780,25 @@ suspend fun fetchHealthData(jwtToken: String): HealthData = withContext(Dispatch
             val body = connection.inputStream.bufferedReader(Charsets.UTF_8).readText()
             connection.disconnect()
             val trimmed = body.trim()
-            if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) throw Exception("Respuesta inesperada del servidor")
+            if (!trimmed.startsWith("{") && !trimmed.startsWith("["))
+                throw Exception("Respuesta inesperada del servidor")
             parseHealthData(body)
         }
         HttpURLConnection.HTTP_MOVED_TEMP,
-        HttpURLConnection.HTTP_MOVED_PERM -> { connection.disconnect(); throw Exception("Redirección inesperada") }
-        else -> { connection.disconnect(); throw Exception("Error HTTP: $code") }
+        HttpURLConnection.HTTP_MOVED_PERM -> {
+            connection.disconnect()
+            throw Exception("Redirección inesperada")
+        }
+        else -> {
+            connection.disconnect()
+            throw Exception("Error HTTP: $code")
+        }
     }
 }
 
-// ── POST: insertar datos de salud ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// POST: INSERTAR DATOS DE SALUD
+// ═══════════════════════════════════════════════════════════════════════════════
 suspend fun insertHealthData(jwtToken: String, peso: Float, altura: Float): Unit = withContext(Dispatchers.IO) {
     if (jwtToken.isBlank()) throw Exception("Token vacío")
 
@@ -579,11 +808,11 @@ suspend fun insertHealthData(jwtToken: String, peso: Float, altura: Float): Unit
     }.toString().toByteArray(Charsets.UTF_8)
 
     val connection = (URL("http://10.0.2.2/api/insertData.php").openConnection() as HttpURLConnection).apply {
-        requestMethod = "POST"
-        connectTimeout = 10_000
-        readTimeout    = 10_000
+        requestMethod          = "POST"
+        connectTimeout         = 10_000
+        readTimeout            = 10_000
         instanceFollowRedirects = false
-        doOutput = true
+        doOutput               = true
         setRequestProperty("Content-Type", "application/json; charset=UTF-8")
         setRequestProperty("Accept", "application/json")
         setRequestProperty("Cookie", "jwt=$jwtToken")
@@ -597,12 +826,20 @@ suspend fun insertHealthData(jwtToken: String, peso: Float, altura: Float): Unit
             connection.disconnect()
         }
         HttpURLConnection.HTTP_MOVED_TEMP,
-        HttpURLConnection.HTTP_MOVED_PERM -> { connection.disconnect(); throw Exception("Redirección inesperada (¿token caducado?)") }
-        else -> { connection.disconnect(); throw Exception("Error HTTP: $code") }
+        HttpURLConnection.HTTP_MOVED_PERM -> {
+            connection.disconnect()
+            throw Exception("Redirección inesperada (¿token caducado?)")
+        }
+        else -> {
+            connection.disconnect()
+            throw Exception("Error HTTP: $code")
+        }
     }
 }
 
-// ── Parser JSON → HealthData ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// PARSER JSON → HealthData
+// ═══════════════════════════════════════════════════════════════════════════════
 fun parseHealthData(json: String): HealthData {
     val array = JSONArray(json)
     if (array.length() == 0) return HealthData()
