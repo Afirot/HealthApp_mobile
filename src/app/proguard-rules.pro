@@ -1,21 +1,44 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ─────────────────────────────────────────────────────────────
+# ATRIBUTOS
+# ─────────────────────────────────────────────────────────────
+-keepattributes SourceFile,LineNumberTable
+-keepattributes Signature
+-keepattributes Exceptions
+-keepattributes RuntimeVisibleAnnotations
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# ─────────────────────────────────────────────────────────────
+# OFUSCACIÓN
+# ─────────────────────────────────────────────────────────────
+-dontusemixedcaseclassnames
+-overloadaggressively
+-repackageclasses 'a'
+-allowaccessmodification
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# ─────────────────────────────────────────────────────────────
+# ACTIVIDADES
+# ─────────────────────────────────────────────────────────────
+-keep class movile.health_app.MainActivity { *; }
+-keep class movile.health_app.LoginActivity { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# ─────────────────────────────────────────────────────────────
+# SECURITYCHECK — es un object Kotlin, no una clase estática
+# ─────────────────────────────────────────────────────────────
+-keep class movile.health_app.SecurityCheck { *; }
+
+# ─────────────────────────────────────────────────────────────
+# ELIMINAR LOGS EN RELEASE
+# ─────────────────────────────────────────────────────────────
+-assumenosideeffects class android.util.Log {
+    public static *** v(...);
+    public static *** d(...);
+    public static *** i(...);
+    public static *** w(...);
+    public static *** e(...);
+    public static *** wtf(...);
+}
+
+# ─────────────────────────────────────────────────────────────
+# OPTIMIZACIÓN
+# ─────────────────────────────────────────────────────────────
+-optimizationpasses 5
+-verbose
