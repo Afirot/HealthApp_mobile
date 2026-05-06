@@ -45,7 +45,6 @@ import java.net.URL
 private const val LOGIN_API_URL    = "http://10.0.2.2/api/login.php"
 private const val REGISTER_API_URL = "http://10.0.2.2/api/registro.php"
 
-// Paleta extraida del CSS original
 private val GreenLight  = Color(0xFF2EBF91)
 private val GreenDark   = Color(0xFF1E9F75)
 private val White       = Color(0xFFFFFFFF)
@@ -57,10 +56,24 @@ private val ErrorText   = Color(0xFFCC3333)
 private val SuccessBg   = Color(0xFFEEFFF6)
 private val SuccessText = Color(0xFF1E9F75)
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACTIVIDAD DE LOGIN
+// ═══════════════════════════════════════════════════════════════════════════════
 class LoginActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // ── Checks de seguridad ──────────────────────────────────────────────
+        val blockReason = SecurityCheck.evaluate(this)
+        if (blockReason != null) {
+            setContent {
+                SecurityBlockScreen(reason = blockReason, onExit = { finishAffinity() })
+            }
+            return
+        }
+
+        // ── Flujo normal ─────────────────────────────────────────────────────
         val prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
         if (prefs.getString("jwt", null) != null) {
             startActivity(Intent(this, MainActivity::class.java))
@@ -72,7 +85,6 @@ class LoginActivity : ComponentActivity() {
             var showRegister by remember { mutableStateOf(false) }
 
             Box(modifier = Modifier.fillMaxSize()) {
-                // Panel de Login (siempre presente)
                 AnimatedVisibility(
                     visible = !showRegister,
                     enter   = slideInHorizontally { -it },
@@ -88,11 +100,10 @@ class LoginActivity : ComponentActivity() {
                     )
                 }
 
-                // Panel de Registro (se desliza desde la derecha)
                 AnimatedVisibility(
                     visible = showRegister,
                     enter   = slideInHorizontally { it },
-                    exit    = slideOutHorizontally { it }
+                    exit    = slideOutHorizontally { -it }
                 ) {
                     RegisterScreen(
                         onRegisterSuccess = { showRegister = false },
@@ -104,9 +115,9 @@ class LoginActivity : ComponentActivity() {
     }
 }
 
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
 // PANTALLA DE LOGIN
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
 @Composable
 fun LoginScreen(
     onLoginSuccess: (String) -> Unit,
@@ -165,7 +176,6 @@ fun LoginScreen(
                 )
                 Spacer(Modifier.height(24.dp))
 
-                // Campo usuario
                 Text(
                     text       = "Usuario",
                     color      = TextDark,
@@ -200,7 +210,6 @@ fun LoginScreen(
 
                 Spacer(Modifier.height(8.dp))
 
-                // Campo contraseña
                 Text(
                     text       = "Contraseña",
                     color      = TextDark,
@@ -247,7 +256,6 @@ fun LoginScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // Error global
                 AnimatedVisibility(visible = errorMsg != null) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -265,7 +273,6 @@ fun LoginScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // Botón iniciar sesión
                 Button(
                     onClick = {
                         var valid = true
@@ -324,7 +331,6 @@ fun LoginScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // Enlace a registro
                 TextButton(onClick = onGoToRegister) {
                     Text(
                         text     = "¿No tienes cuenta? Regístrate",
@@ -346,9 +352,9 @@ fun LoginScreen(
     }
 }
 
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
 // PANTALLA DE REGISTRO
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
 @Composable
 fun RegisterScreen(
     onRegisterSuccess: () -> Unit,
@@ -366,13 +372,12 @@ fun RegisterScreen(
     var errorMsg        by remember { mutableStateOf<String?>(null) }
     var successMsg      by remember { mutableStateOf<String?>(null) }
 
-    // Errores por campo
-    var usuarioError  by remember { mutableStateOf<String?>(null) }
-    var nombreError   by remember { mutableStateOf<String?>(null) }
+    var usuarioError   by remember { mutableStateOf<String?>(null) }
+    var nombreError    by remember { mutableStateOf<String?>(null) }
     var apellidosError by remember { mutableStateOf<String?>(null) }
-    var fechaError    by remember { mutableStateOf<String?>(null) }
-    var passError     by remember { mutableStateOf<String?>(null) }
-    var pass2Error    by remember { mutableStateOf<String?>(null) }
+    var fechaError     by remember { mutableStateOf<String?>(null) }
+    var passError      by remember { mutableStateOf<String?>(null) }
+    var pass2Error     by remember { mutableStateOf<String?>(null) }
 
     val focusManager = LocalFocusManager.current
     val scope        = rememberCoroutineScope()
@@ -420,55 +425,50 @@ fun RegisterScreen(
                 )
                 Spacer(Modifier.height(24.dp))
 
-                // ── Usuario ──
                 RegisterField(
-                    label       = "Usuario",
-                    value       = usuario,
-                    placeholder = "ej: juan123",
-                    error       = usuarioError,
-                    imeAction   = ImeAction.Next,
+                    label         = "Usuario",
+                    value         = usuario,
+                    placeholder   = "ej: juan123",
+                    error         = usuarioError,
+                    imeAction     = ImeAction.Next,
                     onValueChange = { usuario = it; usuarioError = null; errorMsg = null },
                     onNext        = { focusManager.moveFocus(FocusDirection.Down) }
                 )
                 Spacer(Modifier.height(8.dp))
 
-                // ── Nombre ──
                 RegisterField(
-                    label       = "Nombre",
-                    value       = nombre,
-                    placeholder = "ej: Juan",
-                    error       = nombreError,
-                    imeAction   = ImeAction.Next,
+                    label         = "Nombre",
+                    value         = nombre,
+                    placeholder   = "ej: Juan",
+                    error         = nombreError,
+                    imeAction     = ImeAction.Next,
                     onValueChange = { nombre = it; nombreError = null; errorMsg = null },
                     onNext        = { focusManager.moveFocus(FocusDirection.Down) }
                 )
                 Spacer(Modifier.height(8.dp))
 
-                // ── Apellidos ──
                 RegisterField(
-                    label       = "Apellidos",
-                    value       = apellidos,
-                    placeholder = "ej: García López",
-                    error       = apellidosError,
-                    imeAction   = ImeAction.Next,
+                    label         = "Apellidos",
+                    value         = apellidos,
+                    placeholder   = "ej: García López",
+                    error         = apellidosError,
+                    imeAction     = ImeAction.Next,
                     onValueChange = { apellidos = it; apellidosError = null; errorMsg = null },
                     onNext        = { focusManager.moveFocus(FocusDirection.Down) }
                 )
                 Spacer(Modifier.height(8.dp))
 
-                // ── Fecha de nacimiento ──
                 RegisterField(
-                    label       = "Fecha de nacimiento",
-                    value       = fechaNacimiento,
-                    placeholder = "AAAA-MM-DD",
-                    error       = fechaError,
-                    imeAction   = ImeAction.Next,
+                    label         = "Fecha de nacimiento",
+                    value         = fechaNacimiento,
+                    placeholder   = "AAAA-MM-DD",
+                    error         = fechaError,
+                    imeAction     = ImeAction.Next,
                     onValueChange = { fechaNacimiento = it; fechaError = null; errorMsg = null },
                     onNext        = { focusManager.moveFocus(FocusDirection.Down) }
                 )
                 Spacer(Modifier.height(8.dp))
 
-                // ── Contraseña ──
                 Text(
                     text       = "Contraseña",
                     color      = TextDark,
@@ -514,7 +514,6 @@ fun RegisterScreen(
                 )
                 Spacer(Modifier.height(8.dp))
 
-                // ── Confirmar contraseña ──
                 Text(
                     text       = "Confirmar contraseña",
                     color      = TextDark,
@@ -553,7 +552,6 @@ fun RegisterScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // Error global
                 AnimatedVisibility(visible = errorMsg != null) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -569,7 +567,6 @@ fun RegisterScreen(
                     }
                 }
 
-                // Mensaje de éxito
                 AnimatedVisibility(visible = successMsg != null) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -587,16 +584,15 @@ fun RegisterScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // Botón registrarse
                 Button(
                     onClick = {
                         var valid = true
-                        if (usuario.isBlank())         { usuarioError   = "Introduce tu usuario"; valid = false }
-                        if (nombre.isBlank())           { nombreError    = "Introduce tu nombre"; valid = false }
-                        if (apellidos.isBlank())        { apellidosError = "Introduce tus apellidos"; valid = false }
-                        if (fechaNacimiento.isBlank())  { fechaError     = "Introduce tu fecha de nacimiento"; valid = false }
-                        if (pass.isBlank())             { passError      = "Introduce una contraseña"; valid = false }
-                        if (pass2.isBlank())            { pass2Error     = "Confirma tu contraseña"; valid = false }
+                        if (usuario.isBlank())        { usuarioError   = "Introduce tu usuario"; valid = false }
+                        if (nombre.isBlank())          { nombreError    = "Introduce tu nombre"; valid = false }
+                        if (apellidos.isBlank())       { apellidosError = "Introduce tus apellidos"; valid = false }
+                        if (fechaNacimiento.isBlank()) { fechaError     = "Introduce tu fecha de nacimiento"; valid = false }
+                        if (pass.isBlank())            { passError      = "Introduce una contraseña"; valid = false }
+                        if (pass2.isBlank())           { pass2Error     = "Confirma tu contraseña"; valid = false }
                         if (pass.isNotBlank() && pass2.isNotBlank() && pass != pass2) {
                             pass2Error = "Las contraseñas no coinciden"; valid = false
                         }
@@ -627,7 +623,6 @@ fun RegisterScreen(
                                                 errorMsg = mapRegisterError(json.getString("error"))
                                             else -> {
                                                 successMsg = "¡Cuenta creada! Ya puedes iniciar sesión."
-                                                // Volver al login tras un breve delay
                                                 kotlinx.coroutines.delay(1500)
                                                 onRegisterSuccess()
                                             }
@@ -668,7 +663,6 @@ fun RegisterScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // Volver al login
                 TextButton(onClick = onGoToLogin) {
                     Text(
                         text     = "¿Ya tienes cuenta? Inicia sesión",
@@ -681,9 +675,9 @@ fun RegisterScreen(
     }
 }
 
-// ─────────────────────────────────────────────
-// Componente auxiliar: campo de texto genérico
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMPONENTE AUXILIAR
+// ═══════════════════════════════════════════════════════════════════════════════
 @Composable
 private fun RegisterField(
     label:         String,
@@ -727,9 +721,9 @@ private fun registerFieldColors() = OutlinedTextFieldDefaults.colors(
     cursorColor             = GreenLight
 )
 
-// ─────────────────────────────────────────────
-// Llamadas a las APIs
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// LLAMADAS A LAS APIS
+// ═══════════════════════════════════════════════════════════════════════════════
 private fun callLoginApi(username: String, password: String): Result<String> = try {
     val connection = (URL(LOGIN_API_URL).openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"
@@ -793,9 +787,9 @@ private fun callRegisterApi(
     Result.failure(e)
 }
 
-// ─────────────────────────────────────────────
-// Mapeado de errores
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAPEADO DE ERRORES
+// ═══════════════════════════════════════════════════════════════════════════════
 private fun mapLoginError(apiMessage: String) = when (apiMessage) {
     "Invalid Credentials"  -> "Usuario o contraseña incorrectos."
     "Something whet wrong" -> "Error interno del servidor."

@@ -1,11 +1,6 @@
 package movile.health_app
-
 import android.content.Intent
-import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.os.Bundle
-import android.os.Debug
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Canvas
@@ -37,221 +32,15 @@ import kotlinx.coroutines.withContext
 import movile.health_app.ui.theme.Health_AppTheme
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import android.content.pm.PackageManager
 import kotlin.math.pow
-import kotlin.system.exitProcess
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// COMPROBACIONES DE SEGURIDAD
-// ═══════════════════════════════════════════════════════════════════════════════
-object SecurityCheck {
-
-    // ── 1. Detección de modo debug ────────────────────────────────────────────
-    /**
-     * Devuelve true si la app está firmada o ejecutándose en modo debug.
-     *
-     * Combina tres métodos:
-     *  a) Flag ApplicationInfo.FLAG_DEBUGGABLE del manifiesto.
-     *  b) BuildConfig.DEBUG (valor de compilación).
-     *  c) Debug.isDebuggerConnected(): detecta un depurador activo en tiempo real.
-     *
-     * Envuelto en runCatching para garantizar que cualquier excepción inesperada
-     * no provoque un crash técnico (fail-open: si falla, se permite el acceso).
-     */
-    fun isDebugEnvironment(context: android.content.Context): Boolean = runCatching {
-        val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        val hasDebugger  = Debug.isDebuggerConnected()
-        isDebuggable || hasDebugger
-    }.getOrDefault(false)
-
-    // ── 2. Detección de root ──────────────────────────────────────────────────
-    /**
-     * Devuelve true si se detectan indicios de root en el dispositivo.
-     *
-     * Combina cuatro métodos:
-     *  a) Presencia del binario `su` en rutas del sistema.
-     *  b) Paquetes de gestión de root conocidos instalados (Magisk, SuperSU…).
-     *  c) Build tags "test-keys" (imagen de sistema no oficial).
-     *  d) Escritura en /system (partición normalmente de sólo lectura).
-     */
-    fun isRootedDevice(context: android.content.Context): Boolean = runCatching {
-        hasSuBinary() || hasRootPackages(context) || hasTestKeys() || canWriteSystem()
-    }.getOrDefault(false)
-
-    // a) Rutas habituales del binario su
-    private fun hasSuBinary(): Boolean = runCatching {
-        val paths = arrayOf(
-            "/system/bin/su",
-            "/system/xbin/su",
-            "/sbin/su",
-            "/su/bin/su",
-            "/data/local/xbin/su",
-            "/data/local/bin/su",
-            "/data/local/su",
-            "/system/sd/xbin/su",
-            "/system/bin/failsafe/su",
-            "/dev/com.koushikdutta.superuser.daemon/"
-        )
-        paths.any { File(it).exists() }
-    }.getOrDefault(false)
-
-    // b) Paquetes asociados a root/jailbreak
-    private fun hasRootPackages(context: android.content.Context): Boolean = runCatching {
-        val rootPackages = listOf(
-            "com.topjohnwu.magisk",
-            "eu.chainfire.supersu",
-            "com.noshufou.android.su",
-            "com.koushikdutta.superuser",
-            "com.thirdparty.superuser",
-            "com.yellowes.su",
-            "com.kingroot.kinguser",
-            "com.kingo.root",
-            "com.smedialink.oneclickroot",
-            "com.zhiqupk.root.global",
-            "com.alephzain.framaroot"
-        )
-        val pm = context.packageManager
-        rootPackages.any { pkg ->
-            runCatching { pm.getPackageInfo(pkg, 0); true }.getOrDefault(false)
-        }
-    }.getOrDefault(false)
-
-    // c) Build tags de imagen no oficial
-    private fun hasTestKeys(): Boolean = runCatching {
-        android.os.Build.TAGS?.contains("test-keys") == true
-    }.getOrDefault(false)
-
-    // d) Intenta escribir en /system (solo root puede hacerlo)
-    private fun canWriteSystem(): Boolean =
-        runCatching { File("/system/test_root_write").createNewFile() }.getOrDefault(false)
-
-    // ── 3. Verificación de firma ──────────────────────────────────────────────
-    /**
-     * Verifica que la firma del certificado APK coincida con el hash esperado.
-     *
-     * IMPORTANTE: Para obtener tu hash real de release, puedes:
-     *  - Añadir temporalmente un log: Log.d("CERT", getSignatureSha256(context))
-     *    en un build de release, copiar el valor y eliminarlo antes de publicar.
-     *  - O usar: keytool -printcert -jarfile app-release.apk
-     *
-     * La constante EXPECTED_CERT_SHA256 debe contener 64 caracteres hex en
-     * mayúsculas. Mientras esté vacía, la verificación se omite en todos los
-     * entornos para no bloquear a los usuarios antes de configurarla.
-     *
-     * En modo DEBUG (BuildConfig.DEBUG == true) la verificación siempre se omite
-     * porque el AVD usa certificados de debug que nunca coincidirán con release.
-     *
-     * Fail-secure: cuando el hash está configurado, cualquier excepción se trata
-     * como tampering (devuelve true = bloqueado).
-     */
-    private const val EXPECTED_CERT_SHA256 = ""
-    // ← Rellena con tu hash de release antes de publicar. Ejemplo (64 chars hex):
-    // "A1B2C3D4E5F67890A1B2C3D4E5F67890A1B2C3D4E5F67890A1B2C3D4E5F67890"
-
-    fun isSignatureTampered(context: android.content.Context): Boolean {
-        // En debug, omitir siempre: el AVD usa firma de debug
-        val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        if (isDebuggable) return false
-        // Si el hash no está configurado, no bloquear (aún en proceso de setup)
-        if (EXPECTED_CERT_SHA256.isBlank()) return false
-        // En release con hash configurado: fail-secure ante cualquier error
-        return runCatching {
-            val computedHash = getSignatureSha256(context)
-            computedHash != EXPECTED_CERT_SHA256
-        }.getOrDefault(true)
-    }
-
-    /**
-     * Devuelve el SHA-256 (hex en mayúsculas, 64 caracteres) del primer
-     * certificado de firma de la APK instalada.
-     *
-     * Usa la API adecuada según versión de Android:
-     *  - Android ≥ 9 (API 28+): PackageInfo.signingInfo → apkContentsSigners
-     *  - Android < 9           : PackageInfo.signatures (deprecated pero funcional)
-     */
-    @Suppress("DEPRECATION")
-    fun getSignatureSha256(context: android.content.Context): String {
-        val pm          = context.packageManager
-        val packageName = context.packageName
-
-        val certBytes: ByteArray =
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                val info = pm.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
-                info.signingInfo
-                    ?.apkContentsSigners
-                    ?.firstOrNull()
-                    ?.toByteArray()
-                    ?: throw IllegalStateException("Sin información de firma (API 28+)")
-            } else {
-                @Suppress("DEPRECATION")
-                val info = pm.getPackageInfo(packageName, PackageManager.GET_SIGNATURES)
-                info.signatures
-                    ?.firstOrNull()
-                    ?.toByteArray()
-                    ?: throw IllegalStateException("Sin información de firma (API < 28)")
-            }
-
-        return MessageDigest.getInstance("SHA-256").digest(certBytes)
-            .joinToString("") { "%02X".format(it) }
-    }
-
-    // ── 4. Detección de emulador ──────────────────────────────────────────────
-    /**
-     * Devuelve true si se detectan indicios de entorno emulado.
-     *
-     * Combina dos capas de detección:
-     *  a) Campos de Build típicos de emuladores (FINGERPRINT, MODEL, HARDWARE…).
-     *  b) Ficheros de dispositivos de emuladores conocidos (goldfish, ranchu, Genymotion).
-     *
-     * NOTA: Ningún método es infalible; la combinación reduce falsos negativos
-     * manteniendo los falsos positivos en un nivel aceptable.
-     *
-     * Envuelto en runCatching para garantizar cero crashes técnicos.
-     */
-    fun isEmulator(context: android.content.Context): Boolean = runCatching {
-        hasBuildEmulatorTraces() || hasEmulatorFiles()
-    }.getOrDefault(false)
-
-    // a) Huellas en los campos de Build del sistema
-    private fun hasBuildEmulatorTraces(): Boolean = runCatching {
-        val brand        = android.os.Build.BRAND.lowercase()
-        val device       = android.os.Build.DEVICE.lowercase()
-        val fingerprint  = android.os.Build.FINGERPRINT.lowercase()
-        val hardware     = android.os.Build.HARDWARE.lowercase()
-        val manufacturer = android.os.Build.MANUFACTURER.lowercase()
-        val model        = android.os.Build.MODEL.lowercase()
-        val product      = android.os.Build.PRODUCT.lowercase()
-
-        fingerprint.startsWith("generic")
-                || fingerprint.startsWith("unknown")
-                || model.contains("google_sdk")
-                || model.contains("emulator")
-                || model.contains("android sdk built for x86")
-                || manufacturer.contains("genymotion")
-                || (brand.startsWith("generic") && device.startsWith("generic"))
-                || product == "google_sdk"
-                || product.contains("sdk_gphone")
-                || hardware.contains("goldfish")
-                || hardware.contains("ranchu")
-    }.getOrDefault(false)
-
-    // b) Ficheros y sockets característicos de entornos virtuales
-    private fun hasEmulatorFiles(): Boolean = runCatching {
-        val emulatorFiles = arrayOf(
-            "/dev/socket/qemud",
-            "/dev/qemu_pipe",
-            "/system/lib/libc_malloc_debug_qemu.so",
-            "/sys/qemu_trace",
-            "/system/bin/qemu-props",
-            "/dev/socket/genyd",          // Genymotion
-            "/dev/socket/baseband_genyd"  // Genymotion
-        )
-        emulatorFiles.any { File(it).exists() }
-    }.getOrDefault(false)
-}
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import movile.health_app.ui.theme.Health_AppTheme
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MODELO DE DATOS
@@ -267,10 +56,7 @@ data class HealthData(
         }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ENUM: MOTIVOS DE BLOQUEO
-// ═══════════════════════════════════════════════════════════════════════════════
-enum class BlockReason { DEBUG, ROOT, EMULATOR, SIGNATURE }
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACTIVIDAD PRINCIPAL
@@ -280,103 +66,25 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ── Verificación de firma ─────────────────────────────────────────────
-        // Se ejecuta ANTES que cualquier otra comprobación.
-        // En release con hash configurado: cierre silencioso (una APK re-empaquetada
-        // no merece aviso; el usuario legítimo nunca debería llegar aquí).
-        // En debug o sin hash configurado: se omite automáticamente.
-        if (SecurityCheck.isSignatureTampered(this)) {
-            safeExit()
-            return
-        }
-
-        // ── Verificaciones de entorno ─────────────────────────────────────────
-        // Se evalúan ANTES de inflar la UI para evitar mostrar ninguna vista
-        // si el entorno no es seguro. El orden es: debug > root > emulador.
-        // En debug no comprobamos emulador porque el AVD es un emulador por definición.
-        val isDebug    = SecurityCheck.isDebugEnvironment(this)
-        val isRooted   = SecurityCheck.isRootedDevice(this)
-        val isEmulator = if (!isDebug) SecurityCheck.isEmulator(this) else false
-
-        when {
-            isDebug    -> { blockApp(BlockReason.DEBUG);    return }
-            isRooted   -> { blockApp(BlockReason.ROOT);     return }
-            isEmulator -> { blockApp(BlockReason.EMULATOR); return }
-        }
-
         enableEdgeToEdge()
 
-        val sharedPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
-        val jwtToken    = sharedPrefs.getString("jwt", "") ?: ""
+        // 🔐 SECURITY CHECK (nuevo sistema)
+        val reason = SecurityCheck.evaluate(this)
 
         setContent {
             Health_AppTheme {
-                HealthDashboardScreen(jwtToken = jwtToken)
+                if (reason != null) {
+                    SecurityBlockScreen(reason = reason) {
+                        finishAffinity() // cerrar app
+                    }
+                } else {
+                    val sharedPrefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
+                    val jwtToken = sharedPrefs.getString("jwt", "") ?: ""
+
+                    HealthDashboardScreen(jwtToken = jwtToken)
+                }
             }
         }
-    }
-
-    /**
-     * Muestra un diálogo de seguridad claro y no técnico al usuario, luego cierra
-     * la app de forma controlada.
-     *
-     * Garantías de resiliencia (Nivel 5):
-     *  - No hay crashes técnicos: todo el bloque está envuelto en runCatching.
-     *  - Si el diálogo no puede mostrarse (actividad ya destruida, etc.),
-     *    safeExit() se llama directamente en onFailure.
-     *  - setCancelable(false) impide que el usuario descarte el aviso.
-     *  - setOnDismissListener actúa como red de seguridad si el sistema
-     *    descarta el diálogo automáticamente.
-     *  - finishAffinity() cierra toda la pila de actividades antes de exitProcess().
-     */
-    private fun blockApp(reason: BlockReason) {
-        val (title, message) = when (reason) {
-            BlockReason.DEBUG ->
-                "Entorno no permitido" to
-                        "Esta aplicación no puede ejecutarse en modo de depuración.\n\n" +
-                        "Si eres usuario final, por favor descarga la aplicación " +
-                        "desde la tienda oficial."
-
-            BlockReason.ROOT ->
-                "Dispositivo no compatible" to
-                        "Se han detectado privilegios de superusuario (root) en este " +
-                        "dispositivo.\n\nEsta aplicación no puede ejecutarse en " +
-                        "dispositivos rooteados para proteger tus datos de salud."
-
-            BlockReason.EMULATOR ->
-                "Entorno no permitido" to
-                        "Esta aplicación no puede ejecutarse en un emulador o " +
-                        "dispositivo virtual.\n\nPor favor, instala la aplicación " +
-                        "en un dispositivo físico."
-
-            BlockReason.SIGNATURE ->
-                "Error de seguridad" to
-                        "La integridad de la aplicación no ha podido verificarse. " +
-                        "Por favor, descárgala de nuevo desde la tienda oficial."
-        }
-
-        runCatching {
-            android.app.AlertDialog.Builder(this)
-                .setTitle(title)
-                .setMessage(message)
-                .setCancelable(false)
-                .setPositiveButton("Cerrar") { _, _ -> safeExit() }
-                .setOnDismissListener { safeExit() }
-                .show()
-        }.onFailure {
-            // Si el diálogo no se pudo mostrar, cerramos directamente sin crash
-            safeExit()
-        }
-    }
-
-    /**
-     * Cierre limpio y controlado de la aplicación.
-     * finishAffinity() cierra todas las actividades de la pila antes de
-     * terminar el proceso, evitando fugas de actividades en background.
-     */
-    private fun safeExit() {
-        runCatching { finishAffinity() }
-        exitProcess(0)
     }
 }
 
